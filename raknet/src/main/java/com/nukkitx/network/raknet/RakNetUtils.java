@@ -16,6 +16,7 @@ public class RakNetUtils {
         mtu -= 2;
 
         int count = 0;
+        int length = 0;
         IntRange ackRange;
         while ((ackRange = ackQueue.peek()) != null) {
             if (ackRange.start == ackRange.end) {
@@ -38,13 +39,14 @@ public class RakNetUtils {
             }
             ackQueue.remove();
             count++;
+            length += ackRange.end - ackRange.start + 1;
         }
 
         int finalIndex = buffer.writerIndex();
         buffer.writerIndex(lengthIndex);
         buffer.writeShort(count);
         buffer.writerIndex(finalIndex);
-        return count;
+        return length;
     }
 
     public static boolean verifyUnconnectedMagic(ByteBuf buffer) {

@@ -23,6 +23,7 @@ public class RakNetDatagram extends AbstractReferenceCounted {
     byte flags = FLAG_VALID;
     final long sendTime;
     long nextSend;
+    int timesSent;
     int sequenceIndex = -1;
 
     @Override

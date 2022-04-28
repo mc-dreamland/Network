@@ -11,7 +11,7 @@ public interface RakMetrics {
     default void rakDatagramsIn(int count) {
     }
 
-    default void rakDatagramsOut(int count) {
+    default void rakDatagramsOut(int count, boolean stale) {
     }
 
     default void rakStaleDatagrams(int count) {
