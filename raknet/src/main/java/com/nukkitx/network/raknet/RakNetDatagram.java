@@ -20,10 +20,11 @@ public class RakNetDatagram extends AbstractReferenceCounted {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RakNetDatagram.class);
 
     final List<EncapsulatedPacket> packets = new ArrayList<>();
-    byte flags = FLAG_VALID;
     final long sendTime;
     long nextSend;
     int timesSent;
+    boolean isValid = true;
+    boolean isContinuousSend;
     int sequenceIndex = -1;
 
     @Override
@@ -47,7 +48,9 @@ public class RakNetDatagram extends AbstractReferenceCounted {
     }
 
     void decode(ByteBuf buf) {
-        flags = buf.readByte();
+        byte flags = buf.readByte();
+        isValid = (flags & FLAG_VALID) != 0;
+        isContinuousSend = (flags & FLAG_CONTINUOUS_SEND) != 0;
         sequenceIndex = buf.readUnsignedMediumLE();
         while (buf.isReadable()) {
             EncapsulatedPacket packet = new EncapsulatedPacket();
@@ -57,6 +60,13 @@ public class RakNetDatagram extends AbstractReferenceCounted {
     }
 
     public void encode(ByteBuf buf) {
+        byte flags = 0;
+        if (isContinuousSend) {
+            flags |= FLAG_CONTINUOUS_SEND;
+        }
+        if (isValid){
+            flags |= FLAG_VALID;
+        }
         buf.writeByte(flags);
         buf.writeMediumLE(sequenceIndex);
         for (EncapsulatedPacket packet : packets) {
@@ -70,9 +80,6 @@ public class RakNetDatagram extends AbstractReferenceCounted {
         }
 
         packets.add(packet);
-        if (packet.split) {
-            flags |= FLAG_CONTINUOUS_SEND;
-        }
         return true;
     }
 

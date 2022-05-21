@@ -21,7 +21,7 @@ public class RakNetSlidingWindow {
         this.cwnd = mtu;
     }
 
-    public int getRetransmissionBandwidth(int unAckedBytes) {
+    public int getRetransmissionBandwidth(int unAckedBytes, boolean isContinuousSend) {
         return unAckedBytes;
     }
 
@@ -33,6 +33,7 @@ public class RakNetSlidingWindow {
             return 0;
         }
     }
+
     public int onPacketReceived(long curTime, int sequenceNumber) {
         if (this.oldestUnsentAck == 0) {
             this.oldestUnsentAck = curTime;
@@ -91,8 +92,9 @@ public class RakNetSlidingWindow {
         }
 
         this.isContinuousSend = isContinuousSend;
-        if (!isContinuousSend)
+        if (!isContinuousSend) {
             return;
+        }
 
         boolean isNewCongestionControlPeriod = sequenceIndex > this.nextCongestionControlBlock;
 
