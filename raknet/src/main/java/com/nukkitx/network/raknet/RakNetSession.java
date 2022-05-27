@@ -527,8 +527,10 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
 
         boolean isContinuousSend = this.bandwidthExceededStatistic;
         this.bandwidthExceededStatistic = this.outgoingPackets.size() > 0;
+
         // Send packets that are stale first
-        this.sendStaleDatagrams(curTime, isContinuousSend);
+        this.sendStaleDatagrams(curTime);
+
         // Now send usual packets
         this.sendDatagrams(curTime, isContinuousSend);
         // Finally flush channel
@@ -572,37 +574,41 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
         if (log.isTraceEnabled()) {
             log.trace("NAK'ed datagram {} from {}", datagram.sequenceIndex, this.address);
         }
-        this.sendDatagram(datagram, curTime, false);
+        datagram.isContinuousSend = false;
+        this.sendDatagram(datagram, curTime);
     }
 
-    private void sendStaleDatagrams(long curTime, boolean isContinuousSend) {
-        if (this.sentDatagrams.isEmpty())
+    private void sendStaleDatagrams(long curTime) {
+        if (this.sentDatagrams.isEmpty()) {
             return;
+        }
 
-
-        boolean hasResent = false;
         int resendCount = 0;
         int transmissionBandwidth = this.slidingWindow.getRetransmissionBandwidth(this.unackedBytes, this.bandwidthExceededStatistic);
 
+        List<RakNetDatagram> resend = new ArrayList<>(this.sentDatagrams.size());
         for (RakNetDatagram datagram : this.sentDatagrams.values()) {
             if (datagram.getNextSend() <= curTime) {
                 int size = datagram.getSize();
                 if (transmissionBandwidth < size) {
-                    break;
+                    continue;
                 }
                 transmissionBandwidth -= size;
 
-                if (!hasResent) {
-                    hasResent = true;
-                }
                 resendCount++;
-                this.sendDatagram(datagram, curTime, isContinuousSend);
+                resend.add(datagram);
                 if (resendCount > MAXIMUM_STALE_DATAGRAMS)
                     break;
             }
         }
 
-        if (hasResent) {
+        boolean isContinuousSend = resend.size() > 1;
+        for (RakNetDatagram datagram : resend) {
+            datagram.isContinuousSend = isContinuousSend;
+            this.sendDatagram(datagram, curTime);
+        }
+
+        if (resendCount > 0) {
             this.slidingWindow.onResend(curTime);
         }
 
@@ -619,6 +625,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
 
         int transmissionBandwidth = this.slidingWindow.getTransmissionBandwidth(this.unackedBytes, this.bandwidthExceededStatistic);
         RakNetDatagram datagram = new RakNetDatagram(curTime);
+        datagram.isContinuousSend = isContinuousSend;
         EncapsulatedPacket packet;
 
         while ((packet = this.outgoingPackets.peek()) != null) {
@@ -632,17 +639,18 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
 
             // Send full datagram
             if (!datagram.tryAddPacket(packet, this.adjustedMtu)) {
-                this.sendDatagram(datagram, curTime, isContinuousSend);
+                this.sendDatagram(datagram, curTime);
 
                 datagram = new RakNetDatagram(curTime);
+                datagram.isContinuousSend = isContinuousSend;
                 if (!datagram.tryAddPacket(packet, this.adjustedMtu)) {
-                    throw new IllegalArgumentException("Packet too large to fit in MTU (size: " + packet.getSize() + ", MTU: " + this.adjustedMtu +")");
+                    throw new IllegalArgumentException("Packet too large to fit in MTU (size: " + size + ", MTU: " + this.adjustedMtu +")");
                 }
             }
         }
 
         if (!datagram.getPackets().isEmpty()) {
-            this.sendDatagram(datagram, curTime, isContinuousSend);
+            this.sendDatagram(datagram, curTime);
         }
     }
 
@@ -762,7 +770,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
                 throw new IllegalArgumentException("Packet too large to fit in MTU (size: " + packet.getSize() +
                         ", MTU: " + this.adjustedMtu + ")");
             }
-            this.sendDatagram(datagram, curTime, false);
+            this.sendDatagram(datagram, curTime);
         }
         this.channel.flush();
     }
@@ -841,7 +849,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
         return packets;
     }
 
-    private void sendDatagram(RakNetDatagram datagram, long time, boolean isContinuousSend) {
+    private void sendDatagram(RakNetDatagram datagram, long time) {
         Preconditions.checkArgument(!datagram.packets.isEmpty(), "RakNetDatagram with no packets");
         if (this.getRakNet().getMetrics() != null) {
             this.getRakNet().getMetrics().rakDatagramsOut(1, datagram.timesSent > 0);
@@ -850,9 +858,6 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
         try {
             int previousIndex = datagram.sequenceIndex;
             datagram.sequenceIndex = slidingWindow.getAndIncrementNextSequenceNumber();
-            if (isContinuousSend){
-                datagram.isContinuousSend = true;
-            }
 
             for (EncapsulatedPacket packet : datagram.packets) {
                 // check if packet is reliable so it can be resent later if a NAK is received.

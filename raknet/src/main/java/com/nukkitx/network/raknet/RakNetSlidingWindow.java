@@ -74,7 +74,8 @@ public class RakNetSlidingWindow {
         }
     }
 
-    public int getAndIncrementNextSequenceNumber(){
+    // Not sure its synchronized required or not
+    public synchronized int getAndIncrementNextSequenceNumber(){
         return nextSequenceNumber++;
     }
 
