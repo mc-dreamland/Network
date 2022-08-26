@@ -54,7 +54,7 @@ public class RakNetSlidingWindow {
         return skippedMessageCount;
     }
 
-    public void onResend(long curSequenceIndex) {
+    public void onResend(long nextActionTime) {
         if (this.isContinuousSend && !this.backoffThisBlock && this.cwnd > this.mtu * 2) {
             this.ssThresh = this.cwnd / 2D;
 
@@ -63,7 +63,7 @@ public class RakNetSlidingWindow {
             }
             this.cwnd = this.mtu;
 
-            this.nextCongestionControlBlock = curSequenceIndex;
+            this.nextCongestionControlBlock = this.nextSequenceNumber;
             this.backoffThisBlock = true;
         }
     }
@@ -71,6 +71,9 @@ public class RakNetSlidingWindow {
     public void onNak() {
         if (isContinuousSend && !this.backoffThisBlock) {
             this.ssThresh = this.cwnd / 2D;
+
+            this.nextCongestionControlBlock = this.nextSequenceNumber;
+            backoffThisBlock = true;
         }
     }
 
@@ -110,7 +113,7 @@ public class RakNetSlidingWindow {
             if (this.cwnd > this.ssThresh && this.ssThresh != 0) {
                 this.cwnd = this.ssThresh + this.mtu * this.mtu / this.cwnd;
             }
-        } else if (isNewCongestionControlPeriod) {
+        } else {
             this.cwnd += this.mtu * this.mtu / this.cwnd;
         }
     }

@@ -309,7 +309,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
         int missedDatagrams = this.slidingWindow.onPacketReceived(datagram.sendTime,datagram.sequenceIndex);
         if (missedDatagrams == -1){
             if (log.isDebugEnabled()){
-                log.debug("Too many missed datagrams!");
+                log.warn("Too many missed datagrams!");
             }
             disconnect(DisconnectReason.TIMED_OUT);
             return;
