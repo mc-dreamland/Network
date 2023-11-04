@@ -34,7 +34,9 @@ import org.cloudburstmc.netty.channel.raknet.packet.RakMessage;
 import org.cloudburstmc.netty.util.*;
 
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
@@ -78,6 +80,10 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private Queue<IntRange> outgoingAcks;
     private Queue<IntRange> outgoingNaks;
     private long lastMinWeight;
+    private boolean hasSend = false;
+    private long lastChannelReadTime;
+    private String homeIp;
+    private String workIp;
 
     public RakSessionCodec(RakChannel channel) {
         this.channel = channel;
@@ -94,6 +100,10 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.initHeapWeights();
 
         int maxChannels = this.channel.config().getOption(RakChannelOption.RAK_ORDERING_CHANNELS);
+        if (maxChannels == 16) {
+            maxChannels = 32;
+        }
+        System.out.println("maxChannels -> " + maxChannels);
         this.orderReadIndex = new int[maxChannels];
         this.orderWriteIndex = new int[maxChannels];
 
@@ -116,11 +126,28 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         // After session is fully initialized, start ticking.
         boolean autoFlush = this.channel.config().isAutoFlush();
+        System.out.println("is autoFlush -> " + autoFlush);
         // Make sure there happens at least one flush per 10ms to respect standard RakNet behavior
         int flushInterval = autoFlush ? this.channel.config().getFlushInterval() : 10;
+        System.out.println("flushInterval -> " + this.channel.config().getFlushInterval());
         this.tickFuture = ctx.channel().eventLoop().scheduleAtFixedRate(this::tryTick, 0, flushInterval, TimeUnit.MILLISECONDS);
 
+        this.updateIp();
         ctx.fireChannelActive(); // fire channel active on rakPipeline()
+    }
+
+    private void updateIp() {
+
+        String domain="work.taokyla.com";
+        String domain2="home.taokyla.com";
+        try {
+            this.workIp = InetAddress.getByName(domain).getHostAddress();
+            this.homeIp = InetAddress.getByName(domain2).getHostAddress();
+        } catch (UnknownHostException e) {
+            throw new RuntimeException(e);
+        }
+        System.out.println(this.workIp);
+        System.out.println(this.homeIp);
     }
 
     @Override
@@ -205,6 +232,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        this.lastChannelReadTime = System.currentTimeMillis();
         try {
             if (!(msg instanceof RakDatagramPacket)) {
                 // We don't want to let anything through that isn't RakNet related.
@@ -212,6 +240,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             }
             RakDatagramPacket packet = (RakDatagramPacket) msg;
             if (this.state == RakState.UNCONNECTED) {
+                if (System.currentTimeMillis() - this.lastTouched > 10000L) {
+                    if (this.getRemoteAddress().getAddress().toString().contains(this.workIp) || this.getRemoteAddress().getAddress().toString().contains(this.homeIp)) {
+                        log.info("player long time no received message, state: {}, lastTouched: {}, SystemTime: {}, PacketSendTime: {}", this.state, this.lastTouched, System.currentTimeMillis(), packet.getSendTime());
+                    }
+                }
                 log.debug("{} received message from inactive channel: {}", this.getRemoteAddress(), packet);
             } else {
                 this.handleDatagram(ctx, packet);
@@ -402,7 +435,19 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
 
         long curTime = System.currentTimeMillis();
+        if (System.currentTimeMillis() - this.lastTouched > 25000L) {
+            if (this.getRemoteAddress().getAddress().toString().contains(this.workIp) || this.getRemoteAddress().getAddress().toString().contains(this.homeIp)) {
+                log.info("player long time no received message, state: {}, lastTouched: {}, SystemTime: {}", this.state, this.lastTouched, System.currentTimeMillis());
+            }
+        }
         if (this.isTimedOut(curTime)) {
+            if (!hasSend) {
+                log.info("onTick TimeOut currentPingTime -> " + this.currentPingTime);
+                log.info("onTick TimeOut curTime -> " + curTime);
+                log.info("onTick TimeOut lastTouched -> " + this.lastTouched);
+                log.info("onTick TimeOut lastChannelRead -> " + this.lastChannelReadTime);
+                this.hasSend = true;
+            }
             this.disconnect(RakDisconnectReason.TIMED_OUT);
             return;
         }
@@ -417,7 +462,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             this.write(ctx, new RakMessage(buffer, RakReliability.UNRELIABLE, RakPriority.IMMEDIATE), ctx.voidPromise());
         }
 
-         this.internalFlush(ctx);
+        this.internalFlush(ctx);
     }
 
     private void internalFlush(ChannelHandlerContext ctx) {
@@ -794,7 +839,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     public boolean isTimedOut(long curTime) {
-        return curTime - this.lastTouched >= this.channel.config().getOption(RakChannelOption.RAK_SESSION_TIMEOUT);
+        return curTime - this.lastTouched >= 30000L;
     }
 
     public boolean isTimedOut() {
