@@ -66,15 +66,22 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
         int startIndex = buf.readerIndex();
         try {
             int packetId = buf.readUnsignedByte();
+            boolean isGamePing = buf.isReadable(24);
             switch (packetId) {
                 case ID_UNCONNECTED_PING:
-                    if (buf.isReadable(8)) {
+                    if (isGamePing) {
                         buf.readLong(); // Ping time
                     }
                 case ID_OPEN_CONNECTION_REQUEST_1:
                 case ID_OPEN_CONNECTION_REQUEST_2:
-                    ByteBuf magicBuf = ctx.channel().config().getOption(RakChannelOption.RAK_UNCONNECTED_MAGIC);
-                    return buf.isReadable(magicBuf.readableBytes()) && ByteBufUtil.equals(buf.readSlice(magicBuf.readableBytes()), magicBuf);
+                    if (isGamePing) {
+                        ByteBuf magicBuf = ctx.channel().config().getOption(RakChannelOption.RAK_UNCONNECTED_MAGIC);
+                        int size = magicBuf.readableBytes();
+                        boolean readable = buf.isReadable(size);
+                        return readable && ByteBufUtil.equals(buf.readSlice(magicBuf.readableBytes()), magicBuf);
+                    } else {
+                        return true;
+                    }
                 default:
                     return false;
             }
