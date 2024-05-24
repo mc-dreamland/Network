@@ -14,16 +14,39 @@
  * under the License.
  */
 
-package org.cloudburstmc.netty.channel.raknet;
+package org.cloudburstmc.netty.channel.raknet.config;
 
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelPipeline;
-import org.cloudburstmc.netty.channel.raknet.config.RakChannelConfig;
+import org.cloudburstmc.netty.channel.raknet.RakState;
 
-public interface RakChannel extends Channel {
+public interface RakChannelMetrics {
 
-    ChannelPipeline rakPipeline();
+    default void bytesIn(int count) {
+    }
 
-    @Override
-    RakChannelConfig config();
+    default void bytesOut(int count) {
+    }
+
+    default void rakDatagramsIn(int count) {
+    }
+
+    default void rakDatagramsOut(int count) {
+    }
+
+    default void rakStaleDatagrams(int count) {
+    }
+
+    default void ackIn(int count) {
+    }
+
+    default void ackOut(int count) {
+    }
+
+    default void nackIn(int count) {
+    }
+
+    default void nackOut(int count) {
+    }
+
+    default void stateChange(RakState state) {
+    }
 }
