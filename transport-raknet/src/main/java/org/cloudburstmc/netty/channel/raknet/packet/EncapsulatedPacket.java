@@ -21,6 +21,7 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.internal.ObjectPool;
+import io.netty.util.ReferenceCountUtil;
 import org.cloudburstmc.netty.channel.raknet.RakConstants;
 import org.cloudburstmc.netty.channel.raknet.RakReliability;
 
@@ -135,7 +136,7 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
 
     @Override
     protected void deallocate() {
-        this.buffer.release();
+        ReferenceCountUtil.release(this.buffer);
         this.reliability = null;
         this.reliabilityIndex = 0;
         this.sequenceIndex = 0;
@@ -256,8 +257,7 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
     @Override
     public String toString() {
         return "EncapsulatedPacket{" +
-                "handle=" + handle +
-                ", reliability=" + reliability +
+                "reliability=" + reliability +
                 ", reliabilityIndex=" + reliabilityIndex +
                 ", sequenceIndex=" + sequenceIndex +
                 ", orderingIndex=" + orderingIndex +

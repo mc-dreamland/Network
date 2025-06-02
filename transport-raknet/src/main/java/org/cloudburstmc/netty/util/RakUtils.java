@@ -20,6 +20,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.DefaultChannelPipeline;
+import io.netty.channel.socket.DatagramPacket;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -96,6 +97,25 @@ public class RakUtils {
         return new InetSocketAddress(address, port);
     }
 
+    public static boolean skipAddress(ByteBuf buffer) {
+        short type = buffer.readByte();
+        try {
+            if (type == 4) {
+                // Skip 4 + 2 bytes
+                buffer.skipBytes(6);
+            } else if (type == 6) {
+                // Skip 2 + 2 + 4 + 16 + 4 bytes
+                buffer.skipBytes(28);
+            } else {
+                // Vanilla client skips over if the type is not 4 or 6
+                return false;
+            }
+        } catch (IndexOutOfBoundsException e) {
+            return false;
+        }
+        return true;
+    }
+
     public static void writeAddress(ByteBuf buffer, InetSocketAddress address) {
         byte[] addressBytes = address.getAddress().getAddress();
         if (address.getAddress() instanceof Inet4Address) {
@@ -166,5 +186,9 @@ public class RakUtils {
         value |= value >> 16;
         value++;
         return value;
+    }
+
+    public static DatagramPacket datagramReply(ByteBuf buf, DatagramPacket request) {
+        return new DatagramPacket(buf, request.sender(), request.recipient());
     }
 }

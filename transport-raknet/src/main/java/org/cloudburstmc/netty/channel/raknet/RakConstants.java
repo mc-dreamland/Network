@@ -28,6 +28,7 @@ public class RakConstants {
     public static final byte RAKNET_PROTOCOL_VERSION = 11; // Mojang's version.
     public static final int MINIMUM_MTU_SIZE = 576;
     public static final int MAXIMUM_MTU_SIZE = 1400;
+    public static final Integer[] MTU_SIZES = new Integer[]{MAXIMUM_MTU_SIZE, 1200, MINIMUM_MTU_SIZE};
     /**
      * Maximum amount of ordering channels as defined in vanilla RakNet.
      */
@@ -42,6 +43,8 @@ public class RakConstants {
     public static final int RAKNET_DATAGRAM_HEADER_SIZE = 4;
 
     public static final int MAXIMUM_CONNECTION_ATTEMPTS = 10;
+
+    public static final int TIME_BETWEEN_SEND_CONNECTION_ATTEMPTS_MS = 1000;
     /**
      * Time after {@link RakSessionCodec} is closed due to no activity.
      */

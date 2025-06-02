@@ -22,6 +22,8 @@ import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.PromiseCombiner;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.cloudburstmc.netty.channel.proxy.ProxyChannel;
 import org.cloudburstmc.netty.channel.raknet.config.DefaultRakServerConfig;
 import org.cloudburstmc.netty.channel.raknet.config.RakServerChannelConfig;
@@ -42,6 +44,8 @@ import java.util.function.Consumer;
 
 public class RakServerChannel extends ProxyChannel<DatagramChannel> implements ServerChannel {
 
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakServerChannel.class);
+
     private final RakServerChannelConfig config;
     private final Map<SocketAddress, RakChildChannel> childChannelMap = new ConcurrentHashMap<>();
     private final Consumer<RakChannel> childConsumer;
@@ -56,7 +60,9 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         this.config = new DefaultRakServerConfig(this);
         // Default common handler of offline phase. Handles only raknet packets, forwards rest.
         this.pipeline().addLast(UnconnectedPongEncoder.NAME, UnconnectedPongEncoder.INSTANCE);
-        this.pipeline().addLast(RakServerRateLimiter.NAME, new RakServerRateLimiter(this));
+        if (this.config().getPacketLimit() > 0) { // No point in enabling this.
+            this.pipeline().addLast(RakServerRateLimiter.NAME, new RakServerRateLimiter(this));
+        }
         this.pipeline().addLast(RakServerOfflineHandler.NAME, new RakServerOfflineHandler(this));
         this.pipeline().addLast(RakServerRouteHandler.NAME, new RakServerRouteHandler(this));
         this.pipeline().addLast(RakServerTailHandler.NAME, RakServerTailHandler.INSTANCE);
@@ -68,12 +74,18 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
      * @param address remote address of new connection.
      * @return RakChildChannel instance of new channel.
      */
-    public RakChildChannel createChildChannel(InetSocketAddress address, long clientGuid, int protocolVersion, int mtu) {
-        if (this.childChannelMap.containsKey(address)) {
+    public RakChildChannel createChildChannel(InetSocketAddress address, InetSocketAddress localAddress,
+                                              long clientGuid, int protocolVersion, int mtu) {
+        RakChildChannel existingChannel = this.childChannelMap.get(address);
+        if (this.config().getSendCookie() && existingChannel != null) {
+            // We know this player is coming from this IP address due to the cookie, so we can safely close the existing channel.
+            existingChannel.close();
+        } else if (existingChannel != null) {
+            // Could be spoofed, so we don't close the existing channel.
             return null;
         }
 
-        RakChildChannel channel = new RakChildChannel(address, this, clientGuid, protocolVersion, mtu, childConsumer);
+        RakChildChannel channel = new RakChildChannel(address, localAddress, this, clientGuid, protocolVersion, mtu, childConsumer);
         channel.closeFuture().addListener((GenericFutureListener<ChannelFuture>) this::onChildClosed);
         // Fire channel thought ServerBootstrap,
         // register to eventLoop, assign default options and attributes
@@ -108,6 +120,9 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
 
     @Override
     public void onCloseTriggered(ChannelPromise promise) {
+        if (log.isTraceEnabled()) {
+            log.trace("Closing RakServerChannel: {}", Thread.currentThread().getName(), new Throwable());
+        }
         PromiseCombiner combiner = new PromiseCombiner(this.eventLoop());
         this.childChannelMap.values().forEach(channel -> combiner.add(channel.close()));
 

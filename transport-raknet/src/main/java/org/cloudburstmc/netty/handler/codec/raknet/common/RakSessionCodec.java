@@ -26,8 +26,8 @@ import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.cloudburstmc.netty.channel.raknet.*;
-import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
 import org.cloudburstmc.netty.channel.raknet.config.RakChannelMetrics;
+import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
 import org.cloudburstmc.netty.channel.raknet.packet.EncapsulatedPacket;
 import org.cloudburstmc.netty.channel.raknet.packet.RakDatagramPacket;
 import org.cloudburstmc.netty.channel.raknet.packet.RakMessage;
@@ -38,6 +38,8 @@ import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 
@@ -242,6 +244,10 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             throw new IllegalArgumentException();
         }
 
+        RakChannelMetrics metrics = this.getMetrics();
+        if (metrics != null) {
+            metrics.encapsulatedOut(1);
+        }
         EncapsulatedPacket[] packets = this.createEncapsulated(message);
         if (message.priority() == RakPriority.IMMEDIATE) {
             this.sendImmediate(ctx, packets);
@@ -318,12 +324,18 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                     // Not reassembled
                     continue;
                 }
+                if (metrics != null) {
+                    metrics.encapsulatedIn(1);
+                }
                 try {
                     this.checkForOrdered(ctx, reassembled);
                 } finally {
                     reassembled.release();
                 }
             } else {
+                if (metrics != null) {
+                    metrics.encapsulatedIn(1);
+                }
                 this.checkForOrdered(ctx, encapsulated);
             }
         }
@@ -399,6 +411,26 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private void onTick() {
         long curTime = System.currentTimeMillis();
+
+        int maxQueuedBytes = this.channel.config().getOption(RakChannelOption.RAK_MAX_QUEUED_BYTES);
+
+        if (maxQueuedBytes > 0) {
+            int queuedBytes = 0;
+            try {
+                for (EncapsulatedPacket packet : this.outgoingPackets) {
+                    queuedBytes += packet.getBuffer().readableBytes();
+                    if (queuedBytes > maxQueuedBytes) {
+                        this.disconnect(RakDisconnectReason.QUEUE_TOO_LONG);
+                        return;
+                    }
+                }
+            } finally {
+                RakChannelMetrics metrics = this.getMetrics();
+                if (metrics != null) {
+                    metrics.queuedPacketBytes(queuedBytes);
+                }
+            }
+        }
 
         if (this.state == RakState.UNCONNECTED) {
             if (this.isTimedOut(curTime)) {

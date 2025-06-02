@@ -65,12 +65,12 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
         this.rateLimitMap.clear();
     }
 
-    private void onRakTick() {
+    protected void onRakTick() {
         this.rateLimitMap.clear();
         this.globalCounter.set(0);
     }
 
-    private void onBlockedTick() {
+    protected void onBlockedTick() {
         long currTime = System.currentTimeMillis();
 
         RakServerMetrics metrics = this.channel.config().getMetrics();
@@ -110,7 +110,7 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
         log.info("Unblocked address {}", address);
 
         if (this.channel.config().getMetrics() != null) {
-            this.channel.config().getMetrics().addressBlocked(address);
+            this.channel.config().getMetrics().addressUnblocked(address);
         }
     }
 
@@ -124,6 +124,14 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
 
     public void removeException(InetAddress address) {
         this.exceptions.remove(address);
+    }
+
+    public Collection<InetAddress> getExceptions() {
+        return Collections.unmodifiableCollection(this.exceptions);
+    }
+
+    protected int getAddressMaxPacketCount(InetAddress address) {
+        return this.channel.config().getPacketLimit();
     }
 
     @Override
@@ -141,7 +149,7 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
         }
 
         AtomicInteger counter = this.rateLimitMap.computeIfAbsent(address, a -> new AtomicInteger());
-        if (counter.incrementAndGet() > this.channel.config().getPacketLimit() &&
+        if (counter.incrementAndGet() > this.getAddressMaxPacketCount(address) &&
                 this.blockAddress(address, 10, TimeUnit.SECONDS)) {
             log.warn("[{}] Blocked because packet limit was reached", address);
         } else {

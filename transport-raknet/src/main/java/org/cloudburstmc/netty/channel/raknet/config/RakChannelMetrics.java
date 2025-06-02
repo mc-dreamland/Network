@@ -32,6 +32,12 @@ public interface RakChannelMetrics {
     default void rakDatagramsOut(int count) {
     }
 
+    default void encapsulatedIn(int count) {
+    }
+
+    default void encapsulatedOut(int count) {
+    }
+
     default void rakStaleDatagrams(int count) {
     }
 
@@ -41,12 +47,15 @@ public interface RakChannelMetrics {
     default void ackOut(int count) {
     }
 
-    default void nackIn(int count) {
-    }
-
     default void nackOut(int count) {
     }
 
+    default void nackIn(int count) {
+    }
+
     default void stateChange(RakState state) {
+    }
+
+    default void queuedPacketBytes(int count) {
     }
 }
