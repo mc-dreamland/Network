@@ -23,6 +23,9 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class RakSlidingWindow {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RakSlidingWindow.class);
 
