@@ -49,11 +49,11 @@ public class RakSlidingWindow {
     // Window tracking for BBR
     // 10 seconds minRTT window
     private static final long MIN_RTT_WINDOW = 10000;
-    // Max BW window - 10 RTTs sliding window
-    private double[] bwSamples = new double[10];
-    private int bwIndex = 0;
-    private double currentRoundMaxBw = 0;
-    private long nextBwUpdateTimestamp = 0;
+    // Max BW window - simplistic approach: decay or sliding window
+    // We will use a time-decaying max filter for simplicity and lower memory
+    // overhead
+    private static final long BW_WINDOW = 10000;
+    private long maxBwTimestamp = 0;
 
     // Store (SequenceIndex -> BytesAckedAtSend)
     private Map<Integer, Long> packetSendState = new ConcurrentHashMap<>();
@@ -139,31 +139,10 @@ public class RakSlidingWindow {
 
             double deliveryRate = (double) delivered / interval; // bytes per ms
 
-            // Update Max BW (Sliding Window of 10 RTTs)
-            this.currentRoundMaxBw = Math.max(this.currentRoundMaxBw, deliveryRate);
-
-            // Allow initial setup
-            if (this.nextBwUpdateTimestamp == 0) {
-                this.nextBwUpdateTimestamp = curTime + (this.minRtt > 0 ? this.minRtt : 100);
-            }
-
-            if (curTime >= this.nextBwUpdateTimestamp) {
-                this.nextBwUpdateTimestamp = curTime + (this.minRtt > 0 ? this.minRtt : 100);
-
-                // Commit round to history
-                this.bwSamples[this.bwIndex] = this.currentRoundMaxBw;
-                this.bwIndex = (this.bwIndex + 1) % 10;
-                this.currentRoundMaxBw = 0;
-
-                // Recalculate global MaxBW
-                this.maxBw = 0;
-                for (double s : this.bwSamples) {
-                    if (s > this.maxBw)
-                        this.maxBw = s;
-                }
-            } else if (this.maxBw == 0) {
-                // Fast start for first round
-                this.maxBw = this.currentRoundMaxBw;
+            // Update Max BW
+            if (this.maxBw == 0 || deliveryRate > this.maxBw || (curTime - this.maxBwTimestamp > BW_WINDOW)) {
+                this.maxBw = deliveryRate;
+                this.maxBwTimestamp = curTime;
             }
         }
 
