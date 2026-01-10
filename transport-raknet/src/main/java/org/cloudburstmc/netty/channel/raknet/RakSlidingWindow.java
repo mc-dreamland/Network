@@ -55,12 +55,21 @@ public class RakSlidingWindow {
     private static final long BW_WINDOW = 10000;
     private long maxBwTimestamp = 0;
 
-    // Store (SequenceIndex -> BytesAckedAtSend)
-    private Map<Integer, Long> packetSendState = new ConcurrentHashMap<>();
+    // Ring Buffer for BBR state tracking (Size must be power of 2)
+    private static final int STATE_WINDOW_SIZE = 4096;
+    private static final int STATE_WINDOW_MASK = STATE_WINDOW_SIZE - 1;
+
+    // Arrays to store state without object allocation overhead
+    private final int[] stateSequenceIds = new int[STATE_WINDOW_SIZE];
+    private final long[] stateBytesAcked = new long[STATE_WINDOW_SIZE];
+    private final Object stateLock = new Object();
 
     public RakSlidingWindow(int mtu) {
         this.mtu = mtu;
         this.cwnd = mtu * 2; // Initial CWND
+
+        // Initialize sequence ids to -1 as 0 is a valid sequence
+        java.util.Arrays.fill(this.stateSequenceIds, -1);
     }
 
     public int getRetransmissionBandwidth() {
@@ -129,7 +138,17 @@ public class RakSlidingWindow {
         }
 
         // 2. Estimate Bandwidth
-        Long ackedAtSend = this.packetSendState.remove(datagram.getSequenceIndex());
+        Long ackedAtSend = null;
+        int seq = datagram.getSequenceIndex();
+        int idx = seq & STATE_WINDOW_MASK;
+
+        synchronized (stateLock) {
+            if (this.stateSequenceIds[idx] == seq) {
+                ackedAtSend = this.stateBytesAcked[idx];
+                this.stateSequenceIds[idx] = -1; // Mark as consumed
+            }
+        }
+
         if (ackedAtSend != null) {
             long delivered = this.totalBytesAcked - ackedAtSend;
             // Avoid division by zero
@@ -140,8 +159,13 @@ public class RakSlidingWindow {
             double deliveryRate = (double) delivered / interval; // bytes per ms
 
             // Update Max BW
-            if (this.maxBw == 0 || deliveryRate > this.maxBw || (curTime - this.maxBwTimestamp > BW_WINDOW)) {
+            if (this.maxBw == 0 || deliveryRate > this.maxBw) {
                 this.maxBw = deliveryRate;
+                this.maxBwTimestamp = curTime;
+            } else if (curTime - this.maxBwTimestamp > BW_WINDOW) {
+                // Decay instead of hard reset to avoid sudden BW drops
+                // caused by application-limited periods (e.g. standing still)
+                this.maxBw = Math.max(deliveryRate, this.maxBw * 0.85);
                 this.maxBwTimestamp = curTime;
             }
         }
@@ -165,19 +189,18 @@ public class RakSlidingWindow {
             log.debug("[RakOne] ACK: RTT={}, MinRTT={}, BW={} (kB/s), CWND={}, Unacked={}",
                     rtt, minRtt, String.format("%.4f", maxBw), String.format("%.2f", cwnd), unackedBytes);
         }
-
-        // Cleanup old state occasionally (simple naive cleanup)
-        // If map gets too big, clear it roughly. Not perfect but prevents memory leak
-        // loop.
-        if (packetSendState.size() > 2000) {
-            packetSendState.clear();
-        }
     }
 
     public void onReliableSend(RakDatagramPacket datagram) {
         this.unackedBytes += datagram.getSize();
-        // Record state at send time for BBR
-        this.packetSendState.put(datagram.getSequenceIndex(), this.totalBytesAcked);
+        // Record state at send time for BBR using Ring Buffer
+        int seq = datagram.getSequenceIndex();
+        int idx = seq & STATE_WINDOW_MASK;
+
+        synchronized (stateLock) {
+            this.stateSequenceIds[idx] = seq;
+            this.stateBytesAcked[idx] = this.totalBytesAcked;
+        }
     }
 
     public boolean isInSlowStart() {
