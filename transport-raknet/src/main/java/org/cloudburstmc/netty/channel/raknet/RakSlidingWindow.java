@@ -18,9 +18,17 @@ package org.cloudburstmc.netty.channel.raknet;
 
 import org.cloudburstmc.netty.channel.raknet.packet.RakDatagramPacket;
 
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
+
 import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class RakSlidingWindow {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakSlidingWindow.class);
+
     private final int mtu;
     private double cwnd;
     private double ssThresh;
@@ -32,9 +40,36 @@ public class RakSlidingWindow {
     private boolean backoffThisBlock;
     private int unackedBytes;
 
+    // BBR-like variables
+    private long minRtt = -1;
+    private long minRttTimestamp = 0;
+    private double maxBw = 0;
+    private long totalBytesAcked = 0;
+
+    // Window tracking for BBR
+    // 10 seconds minRTT window
+    private static final long MIN_RTT_WINDOW = 10000;
+    // Max BW window - simplistic approach: decay or sliding window
+    // We will use a time-decaying max filter for simplicity and lower memory
+    // overhead
+    private static final long BW_WINDOW = 10000;
+    private long maxBwTimestamp = 0;
+
+    // Ring Buffer for BBR state tracking (Size must be power of 2)
+    private static final int STATE_WINDOW_SIZE = 4096;
+    private static final int STATE_WINDOW_MASK = STATE_WINDOW_SIZE - 1;
+
+    // Arrays to store state without object allocation overhead
+    private final int[] stateSequenceIds = new int[STATE_WINDOW_SIZE];
+    private final long[] stateBytesAcked = new long[STATE_WINDOW_SIZE];
+    private final Object stateLock = new Object();
+
     public RakSlidingWindow(int mtu) {
         this.mtu = mtu;
-        this.cwnd = mtu;
+        this.cwnd = mtu * 2; // Initial CWND
+
+        // Initialize sequence ids to -1 as 0 is a valid sequence
+        java.util.Arrays.fill(this.stateSequenceIds, -1);
     }
 
     public int getRetransmissionBandwidth() {
@@ -56,22 +91,20 @@ public class RakSlidingWindow {
     }
 
     public void onResend(long curSequenceIndex) {
-        if (!this.backoffThisBlock && this.cwnd > this.mtu * 2D) {
-            this.ssThresh = this.cwnd * 0.5D;
-
-            if (this.ssThresh < this.mtu) {
-                this.ssThresh = this.mtu;
-            }
-            this.cwnd = this.mtu;
-
-            this.nextCongestionControlBlock = curSequenceIndex;
-            this.backoffThisBlock = true;
+        // In BBR, we don't necessarily cut CWND on loss/resend, but we might want to
+        // ensure we aren't flooding.
+        // For mobile/lossy networks, ignore loss as congestion signal.
+        if (log.isDebugEnabled()) {
+            log.debug("[RakOne] Resend packet {}, unacked: {}, cwnd: {}", curSequenceIndex, unackedBytes, (int) cwnd);
         }
     }
 
     public void onNak() {
-        if (!this.backoffThisBlock) {
-            this.ssThresh = this.cwnd * 0.75D;
+        // Normal TCP (Reno/CUBIC) reduces window here.
+        // BBR ignores this as congestion signal, assuming it's random loss.
+        // We log it for debugging.
+        if (log.isDebugEnabled()) {
+            log.debug("[RakOne] NAK received. Ignoring for congestion control (Wireless/Lossy optimization).");
         }
     }
 
@@ -79,7 +112,13 @@ public class RakSlidingWindow {
         long rtt = curTime - datagram.getSendTime();
         this.lastRTT = rtt;
         this.unackedBytes -= datagram.getSize();
+        if (this.unackedBytes < 0)
+            this.unackedBytes = 0;
 
+        // Update total bytes acked (approximated contribution)
+        this.totalBytesAcked += datagram.getSize();
+
+        // Update RTT stats (Standard TCP parts for RTO calculation)
         if (this.estimatedRTT == -1) {
             this.estimatedRTT = rtt;
             this.deviationRTT = rtt;
@@ -90,30 +129,82 @@ public class RakSlidingWindow {
             this.deviationRTT += d * (Math.abs(difference) - this.deviationRTT);
         }
 
-        boolean isNewCongestionControlPeriod = datagram.getSequenceIndex() > this.nextCongestionControlBlock;
+        // --- BBR Logic ---
 
-        if (isNewCongestionControlPeriod) {
-            this.backoffThisBlock = false;
-            this.nextCongestionControlBlock = curSequenceIndex;
+        // 1. Update MinRTT
+        if (this.minRtt == -1 || rtt < this.minRtt || (curTime - this.minRttTimestamp > MIN_RTT_WINDOW)) {
+            this.minRtt = rtt;
+            this.minRttTimestamp = curTime;
         }
 
-        if (this.isInSlowStart()) {
-            this.cwnd += this.mtu;
+        // 2. Estimate Bandwidth
+        Long ackedAtSend = null;
+        int seq = datagram.getSequenceIndex();
+        int idx = seq & STATE_WINDOW_MASK;
 
-            if (this.cwnd > this.ssThresh && this.ssThresh != 0) {
-                this.cwnd = this.ssThresh + this.mtu * this.mtu / this.cwnd;
+        synchronized (stateLock) {
+            if (this.stateSequenceIds[idx] == seq) {
+                ackedAtSend = this.stateBytesAcked[idx];
+                this.stateSequenceIds[idx] = -1; // Mark as consumed
             }
-        } else if (isNewCongestionControlPeriod) {
-            this.cwnd += this.mtu * this.mtu / this.cwnd;
+        }
+
+        if (ackedAtSend != null) {
+            long delivered = this.totalBytesAcked - ackedAtSend;
+            // Avoid division by zero
+            long interval = rtt;
+            if (interval < 1)
+                interval = 1;
+
+            double deliveryRate = (double) delivered / interval; // bytes per ms
+
+            // Update Max BW
+            if (this.maxBw == 0 || deliveryRate > this.maxBw) {
+                this.maxBw = deliveryRate;
+                this.maxBwTimestamp = curTime;
+            } else if (curTime - this.maxBwTimestamp > BW_WINDOW) {
+                // Decay instead of hard reset to avoid sudden BW drops
+                // caused by application-limited periods (e.g. standing still)
+                this.maxBw = Math.max(deliveryRate, this.maxBw * 0.85);
+                this.maxBwTimestamp = curTime;
+            }
+        }
+
+        // 3. Update CWND
+        // BDP = Bandwidth * Delay
+        // CWND = Gain * BDP.
+        // Standard BBR Gain is ~2.0 for startup, 1.0-1.25 for cruise.
+        // We stick to 2.0 to be safe and responsive.
+        if (this.maxBw > 0 && this.minRtt > 0) {
+            double targetCwnd = this.maxBw * this.minRtt * 2.0D;
+            // Ensure minimal window (at least MSS)
+            if (targetCwnd < this.mtu)
+                targetCwnd = this.mtu;
+
+            // Smooth CWND update? Or jump? BBR model says jump to target.
+            this.cwnd = targetCwnd;
+        }
+
+        if (log.isDebugEnabled()) {
+            log.debug("[RakOne] ACK: RTT={}, MinRTT={}, BW={} (kB/s), CWND={}, Unacked={}",
+                    rtt, minRtt, String.format("%.4f", maxBw), String.format("%.2f", cwnd), unackedBytes);
         }
     }
 
     public void onReliableSend(RakDatagramPacket datagram) {
         this.unackedBytes += datagram.getSize();
+        // Record state at send time for BBR using Ring Buffer
+        int seq = datagram.getSequenceIndex();
+        int idx = seq & STATE_WINDOW_MASK;
+
+        synchronized (stateLock) {
+            this.stateSequenceIds[idx] = seq;
+            this.stateBytesAcked[idx] = this.totalBytesAcked;
+        }
     }
 
     public boolean isInSlowStart() {
-        return this.cwnd <= this.ssThresh || this.ssThresh == 0;
+        return false;
     }
 
     public void onSendAck() {
@@ -152,4 +243,5 @@ public class RakSlidingWindow {
     public int getUnackedBytes() {
         return unackedBytes;
     }
+
 }
